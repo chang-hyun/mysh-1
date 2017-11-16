@@ -8,6 +8,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <fcntl.h>
+
 #define UNIX_PATH_MAX 108
 #define SOCK_PATH "tpf_unix_sock.server"
 #define DATA "Hello from server"
@@ -26,6 +28,14 @@ struct sockaddr_un {
   char sun_path[UNIX_PATH_MAX];
 };
 */
+
+struct thread_data{
+  struct single_command* com;
+};
+
+struct thread_data t_data;
+
+
 static struct built_in_command built_in_commands[] = {
   { "cd", do_cd, validate_cd_argv },
   { "pwd", do_pwd, validate_pwd_argv },
@@ -45,8 +55,40 @@ static int is_built_in_command(const char* command_name)
   return -1; // Not found
 }
 
-void* runner(void* temp)
+void* runner(void* threadarg)
 {
+  struct thread_data *my_data;
+  struct single_command* com;
+  
+  sleep(1);
+  my_data = (struct thread_data *) threadarg;
+  com =  my_data->com;
+
+  pid_t c_pid, pid;
+  int status;
+  c_pid = fork();
+  
+  remove("text.txt");
+  int fd = open("text.txt", O_RDWR|O_CREAT, 0644);
+
+  if(c_pid==0){
+    pid = getpid();
+    printf("runner print %s", com->argv[0]);
+    dup2(fd, STDOUT_FILENO);
+    execv(com->argv[0], com->argv);
+    fprintf(stderr, "%s:command not found\n", com->argv[0]);
+    return;
+  }
+  else if(c_pid>0){
+    pid = wait(&status);
+   
+  }
+  else{
+    fprintf(stderr, "Fork Failed\n");
+    exit(1);
+    return;
+  }
+
   int client_sock, rc, len;
   struct sockaddr_un server_sockaddr;
   struct sockaddr_un client_sockaddr;
@@ -57,6 +99,7 @@ void* runner(void* temp)
   client_sockaddr.sun_family = AF_UNIX;
   strcpy(client_sockaddr.sun_path, CLIENT_PATH);
   len = sizeof(client_sockaddr);
+  
 
   client_sock = socket(AF_UNIX, SOCK_STREAM, 0);
   if(client_sock == -1){
@@ -90,11 +133,11 @@ void* runner(void* temp)
   {
    printf("Client Connect Success\n");
   }
-
-  strcpy(buf, "Hi Im client");
-  printf("Sending DATA...\n");
+  fd = open("text.txt", O_RDONLY);
+  read(fd, buf, sizeof(buf));
+  printf("Sending DATA...%s\n", buf);
   rc = send(client_sock, buf, sizeof(buf), 0);
-
+ 
   if(rc == -1){
     printf("SEND ERROR\n");
     close(client_sock);
@@ -112,8 +155,8 @@ void* runner(void* temp)
  */
 int evaluate_command(int n_commands, struct single_command (*commands)[512])
 {
+  struct single_command* com = (*commands);
   if (n_commands ==  1) {
-    struct single_command* com = (*commands);
 
     assert(com->argc != 0);
 
@@ -158,102 +201,126 @@ int evaluate_command(int n_commands, struct single_command (*commands)[512])
     }
   }
   else if (n_commands == 2) {
+      struct single_command* com = *commands + 1;
+      pid_t c_pid, pid;
+      int status;
+      c_pid = fork();
 
+      if(c_pid==0){
+        pid = getpid();
+        execv(com->argv[0], com->argv);
+        fprintf(stderr, "%s: command not found \n", com->argv[0]);
+        return 1;
+      }
+      else if(c_pid > 0){
+        pid = wait(&status);
+      }
+      else {
+        fprintf(stderr, "Fork failed");
+        exit(1);
+        return -1;
+      }
       
-    int server_sock, client_sock, len, rc;
-    int bytes_rec = 0;
-    struct sockaddr_un server_sockaddr;
-    struct sockaddr_un client_sockaddr;
-    char buf[256];
-    int backlog = 10;
-    memset(&server_sockaddr, 0, sizeof(struct sockaddr_un));
-    memset(&client_sockaddr, 0, sizeof(struct sockaddr_un));
-    memset(buf, 0, 256);
+      int server_sock, client_sock, len, rc;
+      int bytes_rec = 0;
+      struct sockaddr_un server_sockaddr;
+      struct sockaddr_un client_sockaddr;
+      char buf[256];
+      int backlog = 10;
+      memset(&server_sockaddr, 0, sizeof(struct sockaddr_un));
+      memset(&client_sockaddr, 0, sizeof(struct sockaddr_un));
+      memset(buf, 0, 256);
 
-    server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_sock == -1){
-      printf("SOCKET ERROR\n");
-      exit(1);
-    }
-    else
-    {
-      printf("Server program Server socket making success\n");
-    }
+      server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+      if (server_sock == -1){
+        printf("SOCKET ERROR\n");
+        exit(1);
+      }
+      else
+      {
+        printf("Server program Server socket making success\n");
+      }
 
-    server_sockaddr.sun_family = AF_UNIX;
-    strcpy(server_sockaddr.sun_path, SOCK_PATH);
-    len = sizeof(server_sockaddr);
+      server_sockaddr.sun_family = AF_UNIX;
+      strcpy(server_sockaddr.sun_path, SOCK_PATH);
+      len = sizeof(server_sockaddr);
 
-    unlink(SOCK_PATH);
-    rc = bind(server_sock, (struct sockaddr *) &server_sockaddr, len);
-    if(rc == -1){
-      printf("SERVER BIND ERROR:\n");
-      close(server_sock);
-      exit(1);
-    }
-    else
-    {
-      printf("Server program Bind Success\n");
-    }
+      unlink(SOCK_PATH);
+      rc = bind(server_sock, (struct sockaddr *) &server_sockaddr, len);
+      if(rc == -1){
+        printf("SERVER BIND ERROR:\n");
+        close(server_sock);
+        exit(1);
+      }
+      else
+      {
+       printf("Server program Bind Success\n");
+      }
       
-    pthread_t tid;
-    int temp =0;
-    //Fix needed
-    pthread_create(&tid, NULL, runner, &temp);
-  
-    rc = listen(server_sock, backlog);
-    if(rc == -1){
-      printf("LISTEN ERROR:\n");
-      close(server_sock);
-      exit(1);
-    }
+      pthread_t tid;
+      int temp =0;
+      //Fix needed
+      t_data.com = *commands;
+      pthread_create(&tid, NULL, runner, &t_data);
+   
+      rc = listen(server_sock, backlog);
+      if(rc == -1){
+        printf("LISTEN ERROR:\n");
+        close(server_sock);
+        exit(1);
+      }
      
-    printf("server is listening...\n");
+      printf("server is listening...\n");
 
-    pthread_join(tid,NULL);
+      pthread_join(tid,NULL);
 
-    client_sock = accept(server_sock, (struct sockaddr *) &client_sockaddr, &len);
-    if(client_sock == -1){
-      printf("ACCEPT ERROR:\n");
+      client_sock = accept(server_sock, (struct sockaddr *) &client_sockaddr, &len);
+      if(client_sock == -1){
+        printf("ACCEPT ERROR:\n");
+        close(server_sock);
+        close(client_sock);
+        exit(1);
+      }
+      else
+      {
+        printf("server program accept success\n");
+      }
+
+      len = sizeof(client_sockaddr);
+      rc = getpeername(client_sock, (struct sockaddr *) &client_sockaddr, &len);
+      if(rc == -1){
+        printf("GETPEERNAME ERROR:\n");
+        close(server_sock);
+        close(client_sock);
+        exit(1);
+      }
+      else {
+        printf("Client socket filepath: %s\n", client_sockaddr.sun_path);
+      }
+
+      memset(buf, 0, 256);
+      printf("receving data...\n");
+      
+      int fd = open("text.txt", O_RDWR|O_CREAT, 0644);
+      dup2(fd, STDOUT_FILENO);
+      
+      rc = recv(client_sock, buf, sizeof(buf), 0);
+
+      if(rc == -1) {
+        printf("RECEIVE ERROR: \n");
+        close(server_sock);
+        close(client_sock);
+        exit(1);
+      }
+      else {
+      printf("Data receve!\n");
+      printf("Data : %s", buf);
+      }
+
       close(server_sock);
       close(client_sock);
-      exit(1);
-    }
-    else
-    {
-      printf("server program accept success\n");
-    }
 
-    len = sizeof(client_sockaddr);
-    rc = getpeername(client_sock, (struct sockaddr *) &client_sockaddr, &len);
-    if(rc == -1){
-      printf("GETPEERNAME ERROR:\n");
-      close(server_sock);
-      close(client_sock);
-      exit(1);
     }
-    else {
-      printf("Client socket filepath: %s\n", client_sockaddr.sun_path);
-    }
-
-    memset(buf, 0, 256);
-    printf("receving data...\n");
-    rc = recv(client_sock, buf, sizeof(buf), 0);
-    if(rc == -1) {
-      printf("RECEIVE ERROR: \n");
-      close(server_sock);
-      close(client_sock);
-      exit(1);
-    }
-    else {
-    printf("Data receve!\n"); 
-    printf("Data : %s", buf);
-    }
-
-    close(server_sock);
-    close(client_sock);
-
-  }
 
   return 0;
 }
